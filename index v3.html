@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NOAA MDMAP Map Explorer</title>
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+    <!-- Leaflet MarkerCluster CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            overflow: hidden; /* Prevent body scroll */
+        }
+        #map {
+            height: 100vh;
+        }
+        /* Simple spinner */
+        .loader {
+            border: 4px solid #f3f3f3;
+            border-radius: 50%;
+            border-top: 4px solid #3498db;
+            width: 32px;
+            height: 32px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        /* Custom scrollbar for sidebar */
+        .sidebar-scroll::-webkit-scrollbar { width: 8px; }
+        .sidebar-scroll::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 10px; }
+        .sidebar-scroll::-webkit-scrollbar-thumb { background: #888; border-radius: 10px; }
+        .sidebar-scroll::-webkit-scrollbar-thumb:hover { background: #555; }
+        .dark .sidebar-scroll::-webkit-scrollbar-track { background: #2d3748; }
+        .dark .sidebar-scroll::-webkit-scrollbar-thumb { background: #4a5568; }
+        .dark .sidebar-scroll::-webkit-scrollbar-thumb:hover { background: #718096; }
+    </style>
+</head>
+<body class="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200">
+
+    <div class="flex h-screen">
+        <!-- Sidebar -->
+        <div class="w-full md:w-96 lg:w-1/3 flex flex-col bg-white dark:bg-gray-800 shadow-lg">
+            <!-- Header -->
+            <div class="p-4 border-b border-gray-200 dark:border-gray-700 text-center">
+                <h1 class="text-2xl font-bold text-gray-800 dark:text-white">NOAA MDMAP Explorer</h1>
+                <p class="text-sm text-gray-500 dark:text-gray-400">Marine Debris Monitoring and Assessment Project</p>
+            </div>
+            
+            <!-- Explorer Content -->
+            <div id="explorer" class="p-4 space-y-4 overflow-y-auto sidebar-scroll flex-grow">
+                <!-- This will be populated dynamically -->
+            </div>
+
+            <!-- Response Viewer -->
+            <div class="p-4 border-t border-gray-200 dark:border-gray-700">
+                <h2 class="text-lg font-semibold text-gray-700 dark:text-gray-200 mb-2">API Response</h2>
+                <div class="bg-gray-50 dark:bg-gray-700 rounded-lg p-2 h-48 overflow-y-auto sidebar-scroll">
+                    <pre id="apiResponse" class="text-xs text-gray-800 dark:text-gray-100 whitespace-pre-wrap break-words">Load sites to begin.</pre>
+                </div>
+            </div>
+        </div>
+
+        <!-- Map Container -->
+        <div id="map" class="flex-grow"></div>
+    </div>
+    
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <!-- Leaflet MarkerCluster JS -->
+    <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+    <script>
+        // --- DOM Elements ---
+        const explorerEl = document.getElementById('explorer');
+        const apiResponseEl = document.getElementById('apiResponse');
+        
+        // --- Map & State Management ---
+        let map;
+        let siteDataCache = null;
+        let markers; // Will be a MarkerClusterGroup
+        const markerRefs = {};
+
+        // --- API Configuration ---
+        const baseUrl = 'https://portal.diver.orr.noaa.gov/pentaho/mdmap';
+        const proxyUrls = [
+            'https://api.allorigins.win/raw?url=',
+            'https://corsproxy.io/?',
+            'https://cors-anywhere.herokuapp.com/'
+        ];
+
+        // --- Helper Functions ---
+        const fetchApi = async (endpoint, retriesPerProxy = 2) => {
+            const targetUrl = `${baseUrl}${endpoint}`;
+            apiResponseEl.innerHTML = `<div class="flex justify-center items-center h-full"><div class="loader"></div></div>`;
+
+            for (const proxy of proxyUrls) {
+                let requestUrl = proxy.includes('cors-anywhere') ? proxy + targetUrl : proxy + encodeURIComponent(targetUrl);
+                const proxyName = new URL(proxy).hostname;
+
+                for (let i = 0; i < retriesPerProxy; i++) {
+                    try {
+                        const response = await fetch(requestUrl);
+                        if (!response.ok) throw new Error(`HTTP error ${response.status}`);
+                        const data = await response.json();
+                        apiResponseEl.textContent = JSON.stringify(data, null, 2);
+                        return data;
+                    } catch (error) {
+                        console.error(`Attempt ${i + 1} with ${proxyName} failed:`, error);
+                        if (i < retriesPerProxy - 1) await new Promise(res => setTimeout(res, 1000));
+                    }
+                }
+            }
+
+            apiResponseEl.textContent = `Failed to fetch data after trying all proxies.`;
+            apiResponseEl.classList.add('text-red-500');
+            return null;
+        };
+
+        const createSection = (title) => {
+            const section = document.createElement('div');
+            section.id = `section-${title.toLowerCase().replace(/[^a-z0-9-]/g, '-')}`;
+            section.innerHTML = `<h3 class="text-lg font-semibold text-blue-600 dark:text-blue-400 mb-2">${title}</h3>`;
+            const listContainer = document.createElement('div');
+            listContainer.className = 'space-y-2';
+            section.appendChild(listContainer);
+            return section;
+        };
+        
+        const createClickableItem = (text, onClick) => {
+            const button = document.createElement('button');
+            button.textContent = text;
+            button.className = 'w-full text-left p-2 bg-gray-100 dark:bg-gray-700 hover:bg-blue-100 dark:hover:bg-blue-900 rounded-md text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500';
+            button.addEventListener('click', onClick);
+            return button;
+        };
+
+        const clearSections = (fromLevel) => {
+            const levels = ['site-details', 'surveys', 'transects', 'debris'];
+            const startIndex = levels.indexOf(fromLevel);
+            if (startIndex === -1) return;
+            levels.slice(startIndex).forEach(level => {
+                const section = document.getElementById(`section-${level}`);
+                if (section) section.remove();
+            });
+            document.getElementById('section-sites')?.classList.remove('hidden');
+        };
+
+        // --- Map Functions ---
+        const initMap = () => {
+            map = L.map('map').setView([39.8283, -98.5795], 4);
+            L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
+                attribution: 'Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ',
+                maxZoom: 16
+            }).addTo(map);
+            // Initialize the MarkerClusterGroup
+            markers = L.markerClusterGroup();
+            map.addLayer(markers);
+        };
+
+        const plotSitesOnMap = (sites) => {
+            markers.clearLayers();
+            Object.keys(markerRefs).forEach(key => delete markerRefs[key]);
+
+            sites.forEach(site => {
+                if (site.location?.coordinates) {
+                    const [long, lat] = site.location.coordinates;
+                    if (lat === null || long === null) return;
+                    
+                    const marker = L.marker([lat, long]);
+                    const locationInfo = [site.location.city, site.location.state].filter(Boolean).join(', ');
+                    marker.bindPopup(`<b>${site.name}</b><br>${locationInfo}<br><button class="mt-2 p-1 bg-blue-500 text-white text-xs rounded" onclick="handleSiteClickById(${site.id})">Explore Site</button>`);
+                    markerRefs[site.id] = marker;
+                    // Add the marker to the cluster group instead of a standard layer group
+                    markers.addLayer(marker);
+                }
+            });
+             if (markers.getLayers().length > 0) {
+                map.fitBounds(markers.getBounds().pad(0.1));
+            }
+        };
+
+        // --- Render Functions ---
+        const renderInitialView = () => {
+            explorerEl.innerHTML = '';
+            const initialSection = createSection('Controls');
+            const listContainer = initialSection.querySelector('div');
+            const loadButton = createClickableItem('Load All Survey Sites', handleFetchSites)
+            loadButton.id = 'load-sites-btn';
+            listContainer.appendChild(loadButton);
+            explorerEl.appendChild(initialSection);
+        };
+        
+        const renderSearchAndSites = (sites) => {
+            const existingSection = document.getElementById('section-sites');
+            if (existingSection) existingSection.remove();
+
+            const sitesSection = createSection('Sites');
+            const listContainer = sitesSection.querySelector('div');
+            
+            const searchInput = document.createElement('input');
+            searchInput.type = 'text';
+            searchInput.placeholder = 'Search for a site...';
+            searchInput.className = 'w-full p-2 mb-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500';
+            searchInput.addEventListener('input', (e) => {
+                const searchTerm = e.target.value.toLowerCase();
+                const filteredSites = siteDataCache.filter(site => site.name.toLowerCase().includes(searchTerm));
+                renderSiteList(filteredSites);
+                plotSitesOnMap(filteredSites);
+            });
+            
+            const siteListDiv = document.createElement('div');
+            siteListDiv.id = 'site-list-container';
+            siteListDiv.className = 'space-y-2';
+
+            listContainer.appendChild(searchInput);
+            listContainer.appendChild(siteListDiv);
+            
+            explorerEl.appendChild(sitesSection);
+            renderSiteList(sites);
+        };
+
+        const renderSiteList = (sites) => {
+             const siteListContainer = document.getElementById('site-list-container');
+             if (!siteListContainer) return;
+             siteListContainer.innerHTML = '';
+            
+            if (sites.length === 0) {
+                siteListContainer.innerHTML = `<p class="text-gray-500 italic">No sites match your search.</p>`;
+                return;
+            }
+            
+            sites.forEach(site => {
+                const item = createClickableItem(`${site.name} (ID: ${site.id})`, () => handleSiteClick(site));
+                siteListContainer.appendChild(item);
+            });
+        };
+        
+        const renderSiteDetails = (site) => {
+            clearSections('site-details');
+            document.getElementById('section-sites')?.classList.add('hidden');
+
+            const section = createSection(`Details for ${site.name}`);
+            const listContainer = section.querySelector('div');
+
+            const surveyCount = site.surveys?.length || 0;
+            const locationInfo = [site.location.city, site.location.state, site.location.country].filter(Boolean).join(', ');
+
+            listContainer.innerHTML = `
+                <div class="p-2 bg-gray-50 dark:bg-gray-700 rounded-md text-sm">
+                    <p><strong>Location:</strong> ${locationInfo}</p>
+                    <p><strong>Surveys:</strong> ${surveyCount}</p>
+                </div>
+            `;
+            const backButton = createClickableItem('← Back to Site List', () => clearSections('site-details'));
+            listContainer.appendChild(backButton);
+
+            explorerEl.appendChild(section);
+            renderSurveyList(site);
+        }
+
+        const renderSurveyList = (site) => {
+            const section = createSection(`Surveys`);
+            const listContainer = section.querySelector('div');
+            if (!site.surveys || site.surveys.length === 0) {
+                 listContainer.innerHTML = `<p class="text-gray-500 italic">No surveys found.</p>`;
+            } else {
+                site.surveys.forEach(surveyId => {
+                    listContainer.appendChild(createClickableItem(`Survey ID: ${surveyId}`, () => handleSurveyClick(surveyId)));
+                });
+            }
+            explorerEl.appendChild(section);
+        };
+        
+        const renderTransectList = async (survey) => {
+            clearSections('transects');
+            const section = createSection(`Transects for Survey ${survey.id}`);
+            const listContainer = section.querySelector('div');
+            if (!survey.transects || survey.transects.length === 0) {
+                listContainer.innerHTML = `<p class="text-gray-500 italic">No transects found.</p>`;
+            } else {
+                survey.transects.forEach(transectId => {
+                    listContainer.appendChild(createClickableItem(`Transect ID: ${transectId}`, () => handleTransectClick(transectId)));
+                });
+            }
+            explorerEl.appendChild(section);
+        };
+
+        const renderDebrisList = (transect) => {
+            clearSections('debris');
+            const section = createSection(`Debris for Transect ${transect.id}`);
+            const listContainer = section.querySelector('div');
+             if (!transect.debris || transect.debris.length === 0) {
+                listContainer.innerHTML = `<p class="text-gray-500 italic">No debris found.</p>`;
+            } else {
+                transect.debris.forEach(debrisId => {
+                    listContainer.appendChild(createClickableItem(`Debris ID: ${debrisId}`, () => fetchApi(`/debris/${debrisId}`)));
+                });
+            }
+            explorerEl.appendChild(section);
+        };
+
+        // --- Event Handlers ---
+        const handleFetchSites = async () => {
+            const loadBtn = document.getElementById('load-sites-btn');
+            loadBtn.textContent = 'Loading...';
+            loadBtn.disabled = true;
+
+            const data = await fetchApi('/sites');
+            if (data) {
+                siteDataCache = data;
+                document.getElementById('section-controls').remove();
+                renderSearchAndSites(data);
+                plotSitesOnMap(data);
+            } else {
+                loadBtn.textContent = 'Load All Survey Sites';
+                loadBtn.disabled = false;
+            }
+        };
+
+        const handleSiteClick = (site) => {
+            apiResponseEl.textContent = JSON.stringify(site, null, 2);
+            renderSiteDetails(site);
+            
+            const marker = markerRefs[site.id];
+            if (marker) {
+                 // Using zoomToShowLayer to handle clusters
+                markers.zoomToShowLayer(marker, () => {
+                    marker.openPopup();
+                });
+            }
+        };
+
+        window.handleSiteClickById = (siteId) => {
+            const site = siteDataCache.find(s => s.id === siteId);
+            if (site) {
+                const searchInput = document.querySelector('#section-sites input');
+                if (searchInput) {
+                    searchInput.value = '';
+                    renderSiteList(siteDataCache);
+                    plotSitesOnMap(siteDataCache);
+                }
+                handleSiteClick(site);
+            }
+        };
+        
+        const handleSurveyClick = async (surveyId) => {
+            const data = await fetchApi(`/surveys/${surveyId}`);
+            if (data) renderTransectList(data);
+        };
+
+        const handleTransectClick = async (transectId) => {
+            const data = await fetchApi(`/transects/${transectId}`);
+            if (data) renderDebrisList(data);
+        };
+
+        // --- Initial Load ---
+        initMap();
+        renderInitialView();
+    </script>
+</body>
+</html>

@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Static API Requester</title>
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 dark:bg-gray-900 transition-colors duration-500">
+
+    <div class="min-h-screen flex items-center justify-center p-4">
+        <div class="max-w-xl w-full bg-white dark:bg-gray-800 rounded-2xl shadow-lg p-8">
+            <div class="text-center">
+                <h1 class="text-3xl font-bold text-gray-800 dark:text-white mb-2">API Data Fetcher</h1>
+                <p class="text-gray-600 dark:text-gray-300 mb-6">A simple client-side tool to make HTTP requests.</p>
+            </div>
+
+            <!-- The button that will trigger the API call -->
+            <button id="fetchDataBtn" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg shadow-md transition-transform transform hover:scale-105 focus:outline-none focus:ring-4 focus:ring-blue-300 dark:focus:ring-blue-800">
+                Fetch Data from API
+            </button>
+
+            <!-- This is where the results from the API will be displayed -->
+            <div class="mt-8">
+                <h2 class="text-xl font-semibold text-gray-700 dark:text-gray-200 mb-4">Response:</h2>
+                <div id="responseContainer" class="bg-gray-50 dark:bg-gray-700 rounded-lg p-4 h-64 overflow-y-auto">
+                    <pre id="apiResponse" class="text-sm text-gray-800 dark:text-gray-100 whitespace-pre-wrap break-words">Click the button to see the API response here.</pre>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Get references to the HTML elements we'll be interacting with
+        const fetchDataBtn = document.getElementById('fetchDataBtn');
+        const apiResponseEl = document.getElementById('apiResponse');
+
+        // The original URL of the API we want to call.
+        const targetUrl = 'https://portal.diver.orr.noaa.gov/pentaho/mdmap/groups';
+
+        // --- Using a CORS Proxy ---
+        // Because the NOAA server does not allow cross-origin requests, we need a proxy.
+        // This free proxy fetches the data on its server and adds the required CORS headers
+        // so that our browser will accept the response.
+        const proxyUrl = 'https://api.allorigins.win/raw?url=';
+        const apiUrl = proxyUrl + encodeURIComponent(targetUrl);
+
+
+        // --- Function to fetch data from the API ---
+        async function fetchData() {
+            // Display a loading message while we fetch the data
+            apiResponseEl.textContent = 'Loading...';
+            apiResponseEl.classList.remove('text-red-500');
+
+            try {
+                // The 'fetch' function makes the HTTP request to the proxy URL.
+                const response = await fetch(apiUrl);
+
+                // Check if the request was successful (status code 200-299)
+                if (!response.ok) {
+                    // If not, throw an error to be caught by the catch block
+                    throw new Error(`HTTP error! Status: ${response.status}`);
+                }
+
+                // If the response is OK, parse the JSON data from the response body
+                const data = await response.json();
+
+                // Display the JSON data in a nicely formatted way
+                apiResponseEl.textContent = JSON.stringify(data, null, 2);
+
+            } catch (error) {
+                // If any error occurs during the fetch process, it will be caught here.
+                console.error('Error fetching data:', error);
+                apiResponseEl.textContent = `Failed to fetch data.\n\nError: ${error.message}\n\nPlease check the console for more details.`;
+                apiResponseEl.classList.add('text-red-500');
+            }
+        }
+
+        // --- Event Listener ---
+        // Add a 'click' event listener to the button. When the button is clicked,
+        // it will call our fetchData function.
+        fetchDataBtn.addEventListener('click', fetchData);
+
+    </script>
+
+</body>
+</html>
